@@ -17,6 +17,7 @@ public class Main {
         Cars car2 = new Cars("BMW",2014,60);
         System.out.println(car1);
         System.out.println(car2);
+        System.out.println(car2);
 
         //parse String
         String mail = "a@parus.ua, b@parus.ua";
