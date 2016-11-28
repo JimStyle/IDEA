@@ -4,7 +4,7 @@ package com.company;
  * Created by Arteman on 13.07.16.
  */
 public class Auto {
-    protected double engine;
+    private double engine;
 
     public Auto(double engine) {
         this.engine = engine;
