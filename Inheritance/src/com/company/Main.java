@@ -4,10 +4,10 @@ public class Main {
 
     public static void main(String[] args) {
 	// write your code here
-        PassengerCar bmw,audi;
+        Auto bmw,audi;
         bmw = new PassengerCar(4.4,2);
         audi = new PassengerCar(5.8,2);
-        System.out.println(audi.getPass_number());
+        System.out.println(((PassengerCar)bmw).getPass_number());
 
         //System.out.println(audi.compareTo(bmw));
 
