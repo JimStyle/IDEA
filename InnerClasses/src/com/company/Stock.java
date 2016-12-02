@@ -5,7 +5,7 @@ package com.company;
  */
 public class Stock {
     private String itemname;
-    private int quantity;
+    private static int quantity;
 
     public Stock(String itemname, int quantity) {
         this.itemname = itemname;
@@ -14,8 +14,13 @@ public class Stock {
     public Stock() {
         this.itemname = "";
         this.quantity = 0;
+        Modification mod = new Modification();
+        mod.showModification();
+        int a = mod.type;
+        System.out.println("in Here");
     }
-    public class Modification {
+    public static class Modification {
+        public int type = 5;
         public void showModification(){
             if (quantity > 5)
                 System.out.println("Must be kept on a large stock");
