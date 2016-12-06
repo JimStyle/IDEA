@@ -27,5 +27,6 @@ public class Main {
         //System.out.println(stock.get(0).getQuantity());
         Shop shop = new Shop("LuxShop");
        // System.out.println(shop.getType());
+
     }
 }
