@@ -15,6 +15,7 @@ public class Main {
         family.put(3,car1);
         family.put(1,car2);
         family.put(2,car3);
+        family.
         System.out.println(family.containsKey(3));
 
         for (Map.Entry<Integer,Car> entry : family.entrySet()) {
