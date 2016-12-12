@@ -1,5 +1,7 @@
 package com.company;
 
+import sun.plugin2.message.ShowStatusMessage;
+
 import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
@@ -23,6 +25,7 @@ public class checkin extends JFrame {
     private JPanel checkPanel;
     private JPanel textPanel;
     private JComboBox<String> faceCombo;
+    private JMenuBar menuBar;
 
     public checkin() throws HeadlessException {
         setTitle("My Frame");
@@ -37,6 +40,39 @@ public class checkin extends JFrame {
         add(buttonPanel, BorderLayout.NORTH);
         add(textPanel, BorderLayout.CENTER);
         add(checkPanel, BorderLayout.SOUTH);
+        menuBar = new JMenuBar();
+        setJMenuBar(menuBar);
+        JMenu openMenu = new JMenu("New");
+        menuBar.add(openMenu);
+        JMenuItem open = openMenu.add("Open Document");
+        openMenu.addSeparator();
+        JMenuItem create = openMenu.add("Create Document");
+        create.setEnabled(false);
+        JMenu editMenu = new JMenu("Edit");
+        menuBar.add(editMenu);
+        JMenu pasteItem = new JMenu("Paste");
+        menuBar.add(pasteItem);
+        JMenu exitItem = new JMenu("Exit");
+        menuBar.add(exitItem);
+        JMenuItem exit = exitItem.add("Exit");
+        exit.setToolTipText("Exit immediately");
+        exit.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                System.exit(0);
+            }
+        });
+        exitItem.add(new AbstractAction("My Exit") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+              System.exit(0);
+            }
+        });
+        JPopupMenu popup = new JPopupMenu();
+        JMenuItem item = new JMenuItem("Cut");
+        popup.add(item);
+        //textPanel.add(popup);
+
 
         buttonPanel.setLayout(new GridLayout(1,3));
         buttonPanel.setBackground(Color.yellow);
