@@ -59,6 +59,7 @@ public class checkin extends JFrame {
         exit.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
+               // System.out.println(e.getModifiers());
                 System.exit(0);
             }
         });
