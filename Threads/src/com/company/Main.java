@@ -19,21 +19,34 @@ public class Main {
             }
         }.start();
 
+        //MyRunnable myRunnable = new MyRunnable();
+        Thread myRunnable = new Thread(new MyRunnable());
+        myRunnable.start();
+
         Thread myRunnableThread = new Thread(new MyRunnable() {
             @Override
             public void run() {
                 //super.run();
                 System.out.println(ANSI_RED+"Hello from anonymous class impl of run");
                 try {
-                    anotherThread.join(2000);
+                    //this.wait();
+                    anotherThread.join();
+                    //Thread.yield();
                     System.out.println(ANSI_RED+"Another thread terminated");
                 } catch (InterruptedException e) {
                     System.out.println(ANSI_RED+"I was interrupted");
                 }
             }
         });
+        System.out.println("myRunnable state : "+myRunnableThread.getState());
+        myRunnableThread.setPriority(Thread.MIN_PRIORITY);
         myRunnableThread.start();
-       // anotherThread.interrupt();
+        //anotherThread.interrupt();
+        System.out.println("myRunnable state : "+myRunnable.getState());
+        System.out.println("anotherTread state : "+anotherThread.getState());
+        if (anotherThread.isInterrupted()) {
+            System.out.println("Another thread is terminated!!!!!!");
+        }
 
         System.out.println(ANSI_PURPLE+"Hello again from the main thread");
     }
