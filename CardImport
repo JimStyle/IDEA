@@ -1,0 +1,792 @@
+package parus.clubbase.ef;
+
+import java.awt.*;
+import java.io.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.sql.SQLException;
+import java.util.*;
+import jxl.*;
+import jxl.read.biff.*;
+import parus.appserver.DBCursor;
+import parus.appserver.DBRecord;
+import parus.appserver.logging.Log;
+import parus.appserver.util.*;
+import parus.appserver.util.DateUtil;
+import parus.clubbase.*;
+import parus.common.*;
+import parus.common.controls.table.nTable;
+import parus.common.enums.FormCloseTypesEnum;
+import parus.common.forms.FormPanel;
+import parus.common.progress.*;
+import parus.common.util.*;
+
+/**
+ * Функция импорта карточек из файла
+ * @author alexej
+ */
+public class CardImport extends FormPanel {
+	public CardImport() {
+		initComponents();
+	}
+
+	@Override
+	public boolean canClose(FormCloseTypesEnum type) {
+		boolean ok = super.canClose(type);
+		if (ok && type == FormCloseTypesEnum.CLOSE_CONFIRM) {
+			// курсор данных из файла
+			UIUtil.setCursor(Cursor.WAIT_CURSOR, this);
+			getFileContent();
+			try {
+				ca_rp = newCatalog("cabase");
+				cadeps_rn = newCatalog("cadeps");
+			} catch (SQLException ex) {
+				Log.s(ex);
+				ok = false;
+			}
+			UIUtil.setCursor(Cursor.DEFAULT_CURSOR, this);
+			if (curData.getRecCount() == 0) {
+				UIUtil.errMessBox(this, "Из файла прочитано 0 записей", null);
+				ok = false;
+			}
+			if (!ok) {
+				return ok;
+			}
+			
+			cntIns = 0; cntClose = 0; cntTarif = 0; cntChange = 0; cntSum = 0;
+			cntComment = 0;
+			// Запуск общего потока обработки
+			Thread thrAll = new Thread() {
+				@Override
+				public void run() {
+					// Запуск потока актуализации клубных карт из файла
+					final UpdateThread updatethr = new UpdateThread();
+					Thread thr = new Thread() {
+						@Override
+						public void run() {
+							UIUtil.progressDialog(updatethr
+								 , UIUtil.ProgressDialogTypes.ONE_PROGRESS_INTERRUPT);
+						}
+					};
+					thr.start();
+					while (thr.isAlive()) {
+						continue;
+					}
+					
+					// Запуск потока импорта новых данных
+					final ImportThread importthr = new ImportThread();
+					Thread thr1 = new Thread() {
+						@Override
+						public void run() {
+							UIUtil.progressDialog(importthr
+								 , UIUtil.ProgressDialogTypes.ONE_PROGRESS_INTERRUPT);
+						}
+					};
+					thr1.start();
+					while (thr1.isAlive()) {
+						continue;
+					}
+					String msg = "Импорт завершен";
+					if (updateMode) {
+						msg = "Актуализация завершена";
+					}
+					UIUtil.infMessBox(null, msg
+								+ "\nЗакрыто: "+cntClose
+								+ "\nИзменен владелец: "+cntChange
+								+ "\nДобавлено: "+cntIns 
+								+ "\nИзменен тариф: "+cntTarif
+								+ "\nИзменено примечание: "+cntComment
+								+ "\nДобавлена сумма прихода: "+cntSum, null
+					);					
+				}
+			};	
+			thrAll.start();
+			ok = false;
+		}
+		return ok;
+	}
+	
+	// <editor-fold defaultstate="collapsed" desc="Стандартные методы">
+	@Override
+	public void dispose() {
+		if (params != null) {
+			params.getFromObject();
+			getFormPanel().saveParams(params, params.getName());
+		}
+		super.dispose(); 
+	}
+
+	@Override
+	public void init() {
+		super.init(); 
+		params = new CardImportParams(this);
+		params.getFromObject();
+		params = (CardImportParams) getFormPanel()
+				.loadParams(params, params.getName());
+		params.setToObject();
+	}
+	
+	@Override
+	public void setCaller(Object c) {
+		super.setCaller(c);
+		if (caller instanceof nTable) {
+			table = (nTable) caller;						
+		}
+	}	
+	// </editor-fold>
+	
+	/**
+	 * Создание каталога
+	 * @param tableName имя таблицы
+	 * @return rn каталога из nodes
+	 * @throws java.sql.SQLException
+	 */
+	private String newCatalog(String tableName) throws SQLException {
+		boolean signComp = Application.getPartComp(tableName);
+		String partRn = Application.getPartRN(tableName);
+		String mnemo = "Импорт карточек";
+		String rp = (String) DBUtil.findValue("nodes", "rn",
+							"part_rn = '" + partRn + "' AND rp IS NULL AND rt = 0");
+		String rn = (String) DBUtil.findValue("nodes", "rn"
+					  , "rp = ? AND part_rn = ? AND rt = 0 AND mnemo = ?"
+					  , rp, partRn, mnemo);
+		if (tableName.equals("cadeps")) {
+			rn = (String) DBUtil.findValue("cadeps", "rn", "rp", rn);
+		}
+		if (rn == null) {
+			DBRecord rec = new DBRecord();
+			rec.setField("rp", rp);
+			rec.setField("rt", 0);
+			rec.setField("mnemo", mnemo);
+			rec.setField("part_rn", partRn);
+			rec.setField("company",	signComp && 
+				  (Application.companyRN != null) ? Application.companyRN : null);
+			rn = DBUtil.insertRecord("nodes", rec);
+			if (rn != null) {
+				Rights.setRightsNode(rn);
+			}
+			if (tableName.equals("cadeps")) {
+				rec = new DBRecord();
+				rec.setField("rp", rn);
+				rec.setField("depname", mnemo);
+				rn = DBUtil.insertRecord("cadeps", rec);
+			}
+		}	
+		return rn;
+	}
+
+	 /**
+	 * Чтение данных из .xls
+	 * @param file объект файла .xls
+	 */
+	private void getContentFromXls(File file) {
+		try {
+			WorkbookSettings settings = new WorkbookSettings();
+			settings.setEncoding((String) cmbCodePage.getValue());
+			Workbook workbook = Workbook.getWorkbook(file, settings);
+			Sheet sheet = workbook.getSheet(0);
+			if (!sheet.getCell(0, 0).getContents().startsWith("№")) {
+				UIUtil.errMessBox(null, "Неправильная кодовая страница", null);
+				return;
+			}
+			
+			int lenMnemo = DBUtil.getFldPrecision("cabase", "mnemo");
+			int iTab = -1, iCod = -1, iFio = -1, iSum = -1, iComm = -1;
+			// разбор заголовка
+			for (int col = 0; col < sheet.getColumns(); col++) {
+				Cell cell = sheet.getCell(col, 0);
+				CellType cellType = cell.getType();
+				if (!cellType.equals(CellType.EMPTY)) {
+					String s = cell.getContents();
+					if (s != null) {
+						s = s.trim().toLowerCase();
+						if (s.endsWith("#")) {
+							iTab = col;
+						} else if (s.contains("код")) {
+							iCod = col;
+						} else if (s.contains("компан")) {
+							iComm = col;
+							commModi = true;
+						} else if (s.equals("піб") || s.equals("название") 
+								  || s.equals("имя")) {
+							iFio = col;
+						} else if (s.equals("сума")) {
+							iSum = col;
+							sumModi = true;
+						}
+					}
+				}
+			}		
+			for (int row = 1; row < sheet.getRows(); row++) {
+				DBRecord rec = new DBRecord();
+				for (int col = 0; col < sheet.getColumns(); col++) {
+					Cell cell = sheet.getCell(col, row);
+					CellType cellType = cell.getType();
+					if (!cellType.equals(CellType.EMPTY)) {
+						String s = cell.getContents();
+						if (s != null) {
+							s = s.trim();
+							if (col == 0) {
+									try {
+										Integer.parseInt(s);
+									} catch (NumberFormatException ex) {	
+										col = 5;	// для выхода из цикла по столбцам
+									}
+							} else if (col == iTab) {	// Таб.номер
+								rec.setField("cabase_ident", s);
+							} else if (col == iCod) {	// код карты
+								rec.setField("ident", s);
+							} else if (col == iComm) {	// компания - примечание
+								rec.setField("name", s);
+							} else if (col == iFio) {	// Имя
+								if (s.length() > lenMnemo) {
+									s = StrUtil.left(s, lenMnemo);
+								}
+								rec.setField("tabnum", s);
+							} else if (col == iSum) {	// сумма прихода
+								double sum = 0.0;
+								try {
+									sum = Double.parseDouble(s.replaceFirst(",", "."));
+								} catch (NumberFormatException ex) {	
+								}
+								rec.setField("sum", sum);
+							}
+						}
+					}
+				}
+				if (rec.getStringField("ident") != null) {
+					curData.addRecord(rec);
+				}
+			}
+			workbook.close();
+			
+		} catch (IOException ex) {
+			Log.s(ex);
+		} catch (BiffException ex) {
+			Log.s(ex);
+		}
+	}
+	
+	/**
+	 * Получение данных из текстового файла
+	 */
+	private void getFileContent() {
+		String sfile = dicFile.getValue();
+		File file = new File(sfile);
+		if (!file.isFile()) {
+			return;
+		}
+		commModi = false;
+		sumModi = false;
+		curData = new DBCursor();
+		if (file.getName().endsWith(".xls")) {
+			getContentFromXls(file);
+			return;
+		}
+		BufferedReader in = null;
+		commModi = true;
+		try {
+			in = new BufferedReader(
+					  new InputStreamReader(new FileInputStream(sfile)
+								 , (String) cmbCodePage.getValue()));
+			String str = null;
+			while ((str = in.readLine()) != null) {
+				if (str.length() < 4) {
+					continue;
+				}
+				String[] as = str.split(";");
+				if (as.length < 3) {
+					continue;
+				}
+				DBRecord rec = new DBRecord();
+				rec.setField("ident", 
+						  StrUtil.padl(removeBad(as[0].trim()), 4, '0'));
+				rec.setField("tabnum", removeBad(as[1].trim()));
+				rec.setField("name", as[2].trim());
+				curData.addRecord(rec);
+			}
+		} catch (FileNotFoundException ex) {
+			Log.s(ex);
+		} catch (IOException ex) {
+			Log.s(ex);
+		} finally {
+			if (in != null) {
+				try {
+					in.close();
+				} catch (IOException ex) {
+				}
+			}
+		}
+	}
+
+	private String removeBad(String s) {
+		// удаление невидимых символов
+		byte[] ab = s.getBytes();
+		byte[] ab1 = new byte[ab.length];
+		int i = 0;
+		for (byte b: ab) {
+			if (b > 0) {
+				ab1[i++] = b;
+			}	
+		}
+		return new String(ab1, 0, i);
+	}
+	
+	/**
+	 * Установка признака актуализации
+	 * @param updateMode - признак актуализации
+	 */
+	public void setUpdate(boolean updateMode) {
+		this.updateMode = updateMode;
+	}
+	
+	@SuppressWarnings("unchecked")
+   // <editor-fold defaultstate="collapsed" desc="Generated Code">                          
+   private void initComponents() {
+
+      lblFile1 = new parus.common.controls.pLabel();
+      dicFile = new parus.common.bricks.DicComboFile();
+      okayCancelPanel = new parus.common.bricks.OkayCancelPanel();
+      cmbCodePage = new parus.common.controls.pComboBox();
+      pLabel1 = new parus.common.controls.pLabel();
+      dicTarif = new parus.tarif.DicTarif();
+      lblTarif = new parus.common.controls.pLabel();
+
+      setResizable(true);
+      setTitle("Импорт карточек");
+      setToolTipText("");
+      setMaximumSize(new java.awt.Dimension(32767, 32767));
+      setName("Form"); // NOI18N
+
+      lblFile1.setLabelFor(dicFile);
+      lblFile1.setText("Файл");
+      lblFile1.setName("lblFile1"); // NOI18N
+
+      dicFile.setFilterExt(new String[] {});
+      dicFile.setFilterName("Все");
+      dicFile.setYellow(true);
+      dicFile.setMinimumSize(new java.awt.Dimension(200, 25));
+      dicFile.setName("dicFile"); // NOI18N
+
+      okayCancelPanel.setOkayText("Выбрать");
+      okayCancelPanel.setName("okayCancelPanel"); // NOI18N
+      okayCancelPanel.setPreferredSize(new java.awt.Dimension(321, 51));
+
+      javax.swing.GroupLayout okayCancelPanelLayout = new javax.swing.GroupLayout(okayCancelPanel.getContentPane());
+      okayCancelPanel.getContentPane().setLayout(okayCancelPanelLayout);
+      okayCancelPanelLayout.setHorizontalGroup(
+         okayCancelPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+         .addGap(0, 0, Short.MAX_VALUE)
+      );
+      okayCancelPanelLayout.setVerticalGroup(
+         okayCancelPanelLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+         .addGap(0, 51, Short.MAX_VALUE)
+      );
+
+      cmbCodePage.setModel(new javax.swing.DefaultComboBoxModel(new String[] { "UTF16", "Cp1251" }));
+      cmbCodePage.setName("cmbCodePage"); // NOI18N
+
+      pLabel1.setLabelFor(cmbCodePage);
+      pLabel1.setText("Кодовая страница");
+      pLabel1.setName("pLabel1"); // NOI18N
+
+      dicTarif.setName("dicTarif"); // NOI18N
+
+      lblTarif.setLabelFor(dicTarif);
+      lblTarif.setText("Тариф карт");
+      lblTarif.setName("lblTarif"); // NOI18N
+
+      javax.swing.GroupLayout layout = new javax.swing.GroupLayout(this);
+      this.setLayout(layout);
+      layout.setHorizontalGroup(
+         layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+         .addComponent(okayCancelPanel, javax.swing.GroupLayout.Alignment.TRAILING, javax.swing.GroupLayout.DEFAULT_SIZE, 326, Short.MAX_VALUE)
+         .addGroup(layout.createSequentialGroup()
+            .addContainerGap()
+            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+               .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
+                  .addComponent(pLabel1, javax.swing.GroupLayout.DEFAULT_SIZE, 130, Short.MAX_VALUE)
+                  .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                  .addComponent(cmbCodePage, javax.swing.GroupLayout.PREFERRED_SIZE, 160, javax.swing.GroupLayout.PREFERRED_SIZE))
+               .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
+                  .addComponent(lblFile1, javax.swing.GroupLayout.PREFERRED_SIZE, 46, javax.swing.GroupLayout.PREFERRED_SIZE)
+                  .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                  .addComponent(dicFile, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
+               .addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup()
+                  .addComponent(lblTarif, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
+                  .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+                  .addComponent(dicTarif, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)))
+            .addContainerGap())
+      );
+      layout.setVerticalGroup(
+         layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+         .addGroup(layout.createSequentialGroup()
+            .addContainerGap()
+            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+               .addComponent(dicFile, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+               .addComponent(lblFile1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+            .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+               .addComponent(cmbCodePage, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+               .addComponent(pLabel1, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+            .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
+            .addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE)
+               .addComponent(dicTarif, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
+               .addComponent(lblTarif, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+            .addGap(0, 0, 0)
+            .addComponent(okayCancelPanel, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE))
+      );
+   }// </editor-fold>                        
+
+   // Variables declaration - do not modify                     
+   private parus.common.controls.pComboBox cmbCodePage;
+   private parus.common.bricks.DicComboFile dicFile;
+   private parus.tarif.DicTarif dicTarif;
+   private parus.common.controls.pLabel lblFile1;
+   private parus.common.controls.pLabel lblTarif;
+   private parus.common.bricks.OkayCancelPanel okayCancelPanel;
+   private parus.common.controls.pLabel pLabel1;
+   // End of variables declaration                   
+	
+	/** Объект таблицы клубных карт. */
+	private nTable table = null;
+	/** Курсор данных из файла. */
+	private DBCursor curData = null;
+	/** rn каталога для контрагентов. */
+	private String ca_rp = null;
+	/** rn каталога для сотрудников. */
+	private String cadeps_rn = null;
+	/** Счетчики. */
+	private int cntIns, cntClose, cntChange, cntTarif, cntSum, cntComment;
+	/** Признак актуализации*/
+	private boolean updateMode = false;
+	/** Признак модификации сумм. */
+	private boolean sumModi = false;
+	/** Признак модификации примечания. */
+	private boolean commModi = false;
+
+	// <editor-fold defaultstate="collapsed" desc="Класс-поток актуализации данных">
+	private class UpdateThread implements ProgressRunnable {
+		@Override
+		public void run(ProgressController controller) throws Exception {
+			// предварительные действия
+			controller.setFormCaption("Актуализация данных");
+			controller.setText("Строки");
+			controller.setMax(table.getRowCount());
+			String tarif = dicTarif.getValue();
+			
+			DBRecord rec = null;
+			DBCursor crsClubbase = new DBCursor();
+			DBCursor crsClubTarif = new DBCursor();
+			DBCursor crsClubComments = new DBCursor();
+			DBCursor crsCabase = new DBCursor();
+			DBCursor crsCaempl = new DBCursor();
+			DBCursor crsClubturn = new DBCursor();
+			// предыдущий день для закрытия клубной карты
+			Date date = DateUtil.shiftDate(
+								 DateUtil.getCurDate(), Calendar.DAY_OF_MONTH, -1);
+			for (int i = 0; i < table.getRowCount(); i++) {
+				// закрыть клубную карту, если идентификатора нет в файле
+				String rn = table.getStringField(i, "identifier");
+				String ident = (String) 
+						  DBUtil.findValue("identifiers", "identifier", "rn", rn);
+				if (ident == null) {
+					continue;
+				}
+				int row = curData.findRecord("ident", ident);
+				boolean update = false;
+				rec = new DBRecord();
+				if (row == -1) {
+					// не нашли такой идентификатор в файле - закрыть клубную карту
+					Date validFr = table.getDateField(i, "validfr");
+					if (date.before(validFr)) {
+						date = validFr;
+					}
+					Date dateto = table.getDateField(i, "validto");
+					if ((dateto == null || dateto.after(DateUtil.getCurDate())) &&
+							updateMode) {
+						rec.setField("cardholder", table.getStringField(i, "cardholder"));
+						rec.setField("comments", table.getStringField(i, "comments"));
+						rec.setField("validto", DateUtil.toSqlDate(date));
+						rec.setField("tarif", tarif);
+						cntClose++;
+						update = true;
+					}
+				} else {	// нашли тот же идентификатор
+					// сравниваем владельца
+					rn = table.getStringField(i, "cardholder");
+					String mnemo = (String) 
+							  DBUtil.findValue("cabase", "mnemo", "rn", rn);
+					String tabnum = curData.getStringField(row, "tabnum");
+					String name = curData.getStringField(row, "name");
+					if (!tabnum.equals(mnemo)) {
+						// новый владелец - заменить его в клубной карте
+						rn = (String) 
+							  DBUtil.findValue("cabase", "rn", "upper(mnemo)", tabnum);
+						if (rn == null) {	// владельца еще нет в БД - добавить
+							DBRecord rec1 = new DBRecord();
+							rn = DBUtil.newRN("cabase");
+							rec1.setField("rn", rn);
+							rec1.setField("rp", ca_rp);
+							rec1.setField("rt", 5);
+							rec1.setField("mnemo", tabnum);
+							crsCabase.addRecord(rec1);
+							
+							rec1 = new DBRecord();
+							rec1.setField("rp", rn);
+							rec1.setField("department", cadeps_rn);
+							crsCaempl.addRecord(rec1);
+						}
+						rec.setField("cardholder", rn);
+						rec.setField("comments", name);
+						rec.setField("validto", null);
+						rec.setField("tarif", tarif);
+						cntChange++;
+						update = true;
+					} else {	// есть номер карты и владелец тот же
+						rn = table.getStringField(i, "rn");
+						// Заполнить только тариф
+						if (!StrUtil.equals(table.getStringField(i, "tarif"), tarif)) {
+							DBRecord rec1 = new DBRecord();
+							rec1.setField("rn", rn);
+							rec1.setField("tarif", tarif);
+							crsClubTarif.addRecord(rec1);
+							cntTarif++;
+						}
+						// Заполнить примечание
+						if (commModi && 
+						  !StrUtil.equals(table.getStringField(i, "comments"), name)) {
+							DBRecord rec1 = new DBRecord();
+							rec1.setField("rn", rn);
+							rec1.setField("comments", name);
+							crsClubComments.addRecord(rec1);
+							cntComment++;
+						}
+						if (sumModi) {
+							// сумма прихода
+							double sum = curData.getDoubleField(row, "sum");
+							double balance = table.getDoubleField(i, "balance");
+							if (balance != 0.0) {
+								// добавить расход на остаток
+								rec = new DBRecord();
+								rec.setField("rp", rn);
+								rec.setField("rt", 0);
+								rec.setField("opertime", 
+										  DateUtil.toSqlDateTime(DateUtil.getCurDateTime()));
+								rec.setField("opersum", -balance);
+								crsClubturn.addRecord(rec);
+							}
+							if (sum != 0.0) {
+								rec = new DBRecord();
+								rec.setField("rp", rn);
+								rec.setField("rt", 0);
+								rec.setField("opertime", 
+										  DateUtil.toSqlDateTime(DateUtil.getCurDateTime()));
+								rec.setField("opersum", sum);
+								crsClubturn.addRecord(rec);
+								cntSum++;
+							}
+						}
+					}
+				}
+				if (update) {
+					rec.setField("rn", table.getStringField(i, "rn"));
+					crsClubbase.addRecord(rec);
+				}	
+				controller.update();
+			}
+			if (crsCabase.getRecCount() > 0) {
+				DBUtil.batchInsert("cabase", crsCabase);
+			}	
+			if (crsCaempl.getRecCount() > 0) {
+				DBUtil.batchInsert("caempl", crsCaempl);
+			}	
+			if (crsClubbase.getRecCount() > 0) {
+				DBUtil.batchUpdate("clubbase", crsClubbase);
+			}	
+			if (crsClubTarif.getRecCount() > 0) {
+				DBUtil.batchUpdate("clubbase", crsClubTarif);
+			}	
+			if (crsClubComments.getRecCount() > 0) {
+				DBUtil.batchUpdate("clubbase", crsClubComments);
+			}	
+			if (crsClubturn.getRecCount() > 0) {
+				DBUtil.batchInsert("clubturn", crsClubturn);
+			}	
+		}
+	}	
+	// </editor-fold>
+			
+	// <editor-fold defaultstate="collapsed" desc="Класс-поток импорта ">
+	private class ImportThread implements ProgressRunnable {
+		@Override
+		public void run(ProgressController controller) throws Exception {
+			// предварительные действия
+			controller.setFormCaption("Импорт карточек");
+			controller.setText("Строки");
+			controller.setMax(curData.getRecCount());
+			String tarif = dicTarif.getValue();
+			
+			DBCursor crsIdent = new DBCursor();
+			DBCursor crsCabase = new DBCursor();
+			DBCursor crsClubbase = new DBCursor();
+			DBCursor crsCaempl = new DBCursor();
+			DBCursor crsClubturn = new DBCursor();
+			
+			DBRecord rec = null;
+			String club_rp = ((ClubBase)table.getFormPanel()).findTree()
+					  .getActiveNode().getRN();
+			java.sql.Date curDate = DateUtil.toSqlDate(DateUtil.getCurDate());
+			for (int i = 0; i < curData.getRecCount(); i++) {
+				String ident = curData.getStringField(i, "ident");
+				String tabnum = curData.getStringField(i, "tabnum");
+				String name = curData.getStringField(i, "name");
+				String cabase_ident = curData.getStringField(i, "cabase_ident");
+				double sum = curData.getDoubleField(i, "sum");
+				String id_rn = (String) 
+						  DBUtil.findValue("identifiers", "rn", "identifier", ident);
+				String ca_rn = (String) 
+						  DBUtil.findValue("cabase", "rn", "upper(mnemo)", 
+									 tabnum.toUpperCase());
+				String club_rn = (String) DBUtil.findValue("clubbase", "rn"
+						 , "identifier = ? AND validfr <= ? "
+						+ "AND (validto IS NULL OR validto >= ?)"
+						 , id_rn, curDate, curDate);
+				if (id_rn == null) {
+					id_rn = DBUtil.newRN("identifiers");
+					rec = new DBRecord();
+					rec.setField("rn", id_rn);
+					rec.setField("identifier", ident);
+					crsIdent.addRecord(rec);
+				}
+				if (ca_rn == null) {	// сотрудника нет в БД
+					// ищем в курсоре
+//					int row = curData.findRecord("tabnum", tabnum);
+//					if (row > -1 && row != i) {
+//						String msg = "Для сотрудника \"%1$s\" с номером карты \"%2$s"
+//								  + "\" уже есть номер карты \"%3$s\"\n"
+//								  +"Добавить?";
+//						msg = String.format(msg, tabnum, ident, 
+//								  curData.getStringField(row, "ident"));
+//						if (UIUtil.messageBox(null, msg, getTitle(),
+//							UIUtil.OptionTypes.YES_NO_OPTION,
+//							UIUtil.MessageTypes.QUESTION_MESSAGE) ==
+//							UIUtil.Options.YES_OPTION) {
+							int row = crsCabase.findRecord("mnemo", tabnum);
+							if (row > -1) {
+								ca_rn = crsCabase.getStringField(row, "rn");
+							}	
+//						} else {
+//							continue;
+//						}
+//					}
+					if (ca_rn == null) {
+						ca_rn = DBUtil.newRN("cabase");
+						rec = new DBRecord();
+						rec.setField("rn", ca_rn);
+						rec.setField("rp", ca_rp);
+						rec.setField("rt", 5);
+						rec.setField("mnemo", tabnum);
+						rec.setField("ident", cabase_ident);
+						crsCabase.addRecord(rec);
+
+						rec = new DBRecord();
+						rec.setField("rp", ca_rn);
+						rec.setField("department", cadeps_rn);
+						crsCaempl.addRecord(rec);
+					}
+				}
+				if (club_rn == null && DBUtil.findValue(
+						  "clubbase", "rn", "upper(cardnum)", ident) == null) {
+					club_rn = DBUtil.newRN("clubbase");
+					rec = new DBRecord();
+					rec.setField("rn", club_rn);
+					rec.setField("rp", club_rp);
+					rec.setField("identifier", id_rn);
+					rec.setField("cardnum", ident);
+					rec.setField("cardholder", ca_rn);
+					rec.setField("validfr", curDate);
+					rec.setField("comments", name);
+					rec.setField("tarif", tarif);
+					crsClubbase.addRecord(rec);
+					// сумма прихода
+					if (sum != 0.0) {
+						rec = new DBRecord();
+						rec.setField("rp", club_rn);
+						rec.setField("rt", 0);
+						rec.setField("opertime", 
+								  DateUtil.toSqlDateTime(DateUtil.getCurDateTime()));
+						rec.setField("opersum", sum);
+						crsClubturn.addRecord(rec);
+						cntSum++;
+					}
+					cntIns++;
+				}	
+				controller.update();
+			}
+			if (crsIdent.getRecCount() > 0) {
+				DBUtil.batchInsert("identifiers", crsIdent);
+			}	
+			if (crsCabase.getRecCount() > 0) {
+				DBUtil.batchInsert("cabase", crsCabase);
+			}	
+			if (crsCaempl.getRecCount() > 0) {
+				DBUtil.batchInsert("caempl", crsCaempl);
+			}	
+			if (crsClubbase.getRecCount() > 0) {
+				DBUtil.batchInsert("clubbase", crsClubbase);
+			}	
+			if (crsClubturn.getRecCount() > 0) {
+				DBUtil.batchInsert("clubturn", crsClubturn);
+			}	
+		}
+	}	
+	// </editor-fold>
+	
+	/** Параметры полей */
+	private CardImportParams params = null;
+	
+	// <editor-fold defaultstate="collapsed" desc="Класс параметров полей">
+	private static class CardImportParams extends Params<CardImport> {
+		/**
+		 * Конструктор.
+		 * @param obj Объект-владелец.
+		 */
+		public CardImportParams(CardImport obj) {
+			super(obj);
+		}
+
+		@Override
+		public String getName() {
+			return object.getName();
+		}
+
+		@Override
+		public void setToObject() {
+			object.dicFile.setValue(fileName);
+			object.cmbCodePage.setValue(codepage);
+			object.dicTarif.setValue(tarifName);
+		}
+
+		@Override
+		public void getFromObject() {
+			fileName = object.dicFile.getValue();
+			codepage = (String) object.cmbCodePage.getValue();
+			tarifName = object.dicTarif.getValue();
+		}
+
+		/** Версия класса при сериализации. */
+		private static final long serialVersionUID = 0;
+
+		/** Имя файла. */ 
+		private String fileName = null;
+		/** Кодовая страница. */ 
+		private String codepage = null;
+		/** Тариф карт. */
+		private String tarifName = null;
+	}
+	// </editor-fold>
+}
