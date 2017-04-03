@@ -9,14 +9,14 @@ public class Main {
     public static void main(String[] args) {
 	// write your code here
         Stock cherry = new Stock();
-        Stock apple = new Stock("apple",20);
+        Stock apple = new Stock("apple",10);
         Stock.Modification mod = new Stock.Modification(); //static
       //  Stock.Modification mod = apple.new Modification(); //not static
         mod.showModification();
         int a = mod.type;
         System.out.println(a);
         Stock pear = new Stock("pear",10);
-        Stock grapes = new Stock("grapes",15);
+        Stock grapes = new Stock("grapes",25);
         ArrayList<Stock> stock = new ArrayList<>();
         stock.add(apple);
         stock.add(grapes);
