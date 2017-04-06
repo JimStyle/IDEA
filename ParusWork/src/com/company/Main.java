@@ -22,7 +22,7 @@ public class Main {
             try {
                 for (String s : arr) {
                     if (Integer.parseInt(s) < 2 || Integer.parseInt(s) > 7) {
-                        System.out.println("Error2");
+                        System.out.println("Error3");
                         break;
                     }
                 }
