@@ -24,7 +24,7 @@ public class PassengerCar extends Auto implements Comparable<PassengerCar>{
 
     @Override
     public double getEngine() {
-        System.out.println("In passenger car");
+        System.out.print("In passenger car - ");
         return super.getEngine();
     }
 
@@ -33,6 +33,14 @@ public class PassengerCar extends Auto implements Comparable<PassengerCar>{
         int engineSize = (int) o.getEngine();
         return ((int) this.getEngine()) - engineSize;
     }
+
+    @Override
+    public String toString() {
+        return "PassengerCar{" +
+                "pass_number=" + pass_number +
+                '}'+super.toString();
+    }
+
     public static Comparator<PassengerCar> Enginecomparator = new Comparator<PassengerCar>() {
         @Override
         public int compare(PassengerCar o1, PassengerCar o2) {
