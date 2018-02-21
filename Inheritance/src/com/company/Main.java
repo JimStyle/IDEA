@@ -23,9 +23,9 @@ public class Main {
         System.out.println(audi.getModel());
         System.out.println(CarInterface.model);
 
-        Object oo3 = audi;
-        if (oo3 instanceof Auto){
-            System.out.println(((PassengerCar) oo3).getEngine());
+        Object oo4 = audi;
+        if (oo4 instanceof Auto){
+            System.out.println(((PassengerCar) oo4).getEngine());
         }
 
         //exceptions
