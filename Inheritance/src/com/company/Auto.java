@@ -17,6 +17,11 @@ public class Auto {
         return engine;
     }
 
+    public int getPass_number() {
+        System.out.println("in Auto class");
+        return 0;
+    }
+
     @Override
     public String toString() {
         return "Auto{" +

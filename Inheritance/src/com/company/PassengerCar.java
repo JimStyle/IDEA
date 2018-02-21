@@ -5,8 +5,8 @@ import java.util.Comparator;
 /**
  * Created by Arteman on 13.07.16.
  */
-public class PassengerCar extends Auto implements Comparable<PassengerCar>{
-    private int pass_number;
+public class PassengerCar extends Auto implements CarInterface,Comparable<PassengerCar>{
+    protected int pass_number;
     //private int engine;
 
     public PassengerCar(double engine, int pass_number) {
@@ -18,8 +18,12 @@ public class PassengerCar extends Auto implements Comparable<PassengerCar>{
         this.pass_number = pass_number;
     }
 
+
+
+    @Override
     public int getPass_number() {
-        return pass_number;
+        System.out.println("In passenger car - ");
+        return (pass_number != 0 ? pass_number : super.getPass_number());
     }
 
     @Override
@@ -39,6 +43,11 @@ public class PassengerCar extends Auto implements Comparable<PassengerCar>{
         return "PassengerCar{" +
                 "pass_number=" + pass_number +
                 '}'+super.toString();
+    }
+
+    @Override
+    public String getModel() {
+        return "Test model " + model;   //a field from the interface
     }
 
     public static Comparator<PassengerCar> Enginecomparator = new Comparator<PassengerCar>() {
